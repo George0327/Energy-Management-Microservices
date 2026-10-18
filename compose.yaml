@@ -1,0 +1,304 @@
+
+services:
+  traefik:
+    image: traefik:v3.6
+    container_name: traefik
+    command:
+      - "--api.dashboard=true"
+      - "--api.insecure=true" #Remove
+      - "--providers.docker=true"
+      - "--providers.docker.exposedbydefault=false"
+      - "--entrypoints.web.address=:80"
+    ports:
+      - "80:80"
+      - "8080:8080"
+    networks:
+      - app
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+  
+  rabbitmq:
+    image: rabbitmq:3-management
+    container_name: rabbitmq
+    ports:
+      - "5672:5672"
+      - "15672:15672"
+    environment:
+      RABBITMQ_DEFAULT_USER: guest
+      RABBITMQ_DEFAULT_PASS: guest
+    networks:
+      - app
+
+  # DATABASES
+  device-db:
+    image: postgres:15
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: ${DB_PASSWORD:-postgres}
+      POSTGRES_DB: device-db
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d device-db"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - app
+
+  user-db:
+    image: postgres:15
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: ${DB_PASSWORD:-postgres}
+      POSTGRES_DB: user-db
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d user-db"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - app
+
+  auth-db:
+    image: postgres:15
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: ${DB_PASSWORD:-postgres}
+      POSTGRES_DB: auth-db
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d auth-db"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - app
+  
+  monitoring-db:
+    image: postgres:15
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: ${DB_PASSWORD:-postgres}
+      POSTGRES_DB: monitoring-db
+      SPRING_RABBITMQ_HOST: rabbitmq
+      SPRING_RABBITMQ_PORT: 5672
+      SPRING_RABBITMQ_USERNAME: guest
+      SPRING_RABBITMQ_PASSWORD: guest
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d monitoring-db"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - app
+
+  support-db:
+    image: postgres:15
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: ${DB_PASSWORD:-postgres}
+      POSTGRES_DB: support-db
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d support-db"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - app
+
+  # MICROservices
+  device-service:
+    build:
+      context: ./Device_Microservice
+      dockerfile: Dockerfile
+    image: device.service
+    ports:
+      - "8081:8080"
+    environment:
+      DB_IP: device-db
+      DB_PORT: 5432
+      DB_USER: postgres
+      DB_PASSWORD: ${DB_PASSWORD:-postgres}
+      DB_DBNAME: device-db
+    depends_on:
+      device-db:
+        condition: service_healthy
+    networks:
+      - app
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.device.rule=PathPrefix(`/api/devices`)"
+      - "traefik.http.services.device.loadbalancer.server.port=8080"
+      - "traefik.docker.network=app"
+
+  user-service:
+    build:
+      context: ./User_Microservice
+      dockerfile: Dockerfile
+    image: user.service
+    ports:
+      - "8082:8080"
+    environment:
+      DB_IP: user-db
+      DB_PORT: 5432
+      DB_USER: postgres
+      DB_PASSWORD: ${DB_PASSWORD:-postgres}
+      DB_DBNAME: user-db
+    depends_on:
+      user-db:
+        condition: service_healthy
+    networks:
+      - app
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.user.rule=PathPrefix(`/api/users`)"
+      - "traefik.http.services.user.loadbalancer.server.port=8080"
+      - "traefik.docker.network=app"
+
+  auth-service:
+    build:
+      context: ./Auth_Microservice
+      dockerfile: Dockerfile
+    image: auth.service
+    ports:
+      - "8083:8080"
+    environment:
+      JWT_SECRET: ${JWT_SECRET:?Set JWT_SECRET in .env (see .env.example)}
+      DB_IP: auth-db
+      DB_PORT: 5432
+      DB_USER: postgres
+      DB_PASSWORD: ${DB_PASSWORD:-postgres}
+      DB_DBNAME: auth-db
+    depends_on:
+      auth-db:
+        condition: service_healthy
+    networks:
+      - app
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.auth.rule=PathPrefix(`/auth`)"
+      - "traefik.http.services.auth.loadbalancer.server.port=8080"
+      - "traefik.docker.network=app"
+
+  monitoring-service:
+    build:
+      context: ./Consumer_Microservice
+      dockerfile: Dockerfile
+    image: monitoring.service
+    ports:
+      - "8084:8080"
+    environment:
+      DB_IP: monitoring-db
+      DB_PORT: 5432
+      DB_USER: postgres
+      DB_PASSWORD: ${DB_PASSWORD:-postgres}
+      DB_DBNAME: monitoring-db
+    depends_on:
+      monitoring-db:
+        condition: service_healthy
+    networks:
+      - app
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.monitoring.rule=PathPrefix(`/monitoring`)"
+      - "traefik.http.services.monitoring.loadbalancer.server.port=8080"
+      - "traefik.docker.network=app"
+
+  producer-service:
+    build:
+      context: ./Producer_Microservice
+      dockerfile: Dockerfile
+    image: producer.service
+    ports:
+      - "8085:8080"
+    environment:
+      DEVICE_ID: ${DEVICE_ID:-e863b111-a85a-45cf-86fc-e7d4fb4978e6}
+      DB_IP: monitoring-db
+      DB_PORT: 5432
+      DB_USER: postgres
+      DB_PASSWORD: ${DB_PASSWORD:-postgres}
+      DB_DBNAME: monitoring-db
+    depends_on:
+      monitoring-db:
+        condition: service_healthy
+    networks:
+      - app
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.producer.rule=PathPrefix(`/producer`)"
+      - "traefik.http.services.producer.loadbalancer.server.port=8080"
+      - "traefik.docker.network=app"
+
+  websocket-service:
+    build:
+      context: ./WebSocket_Microservice
+      dockerfile: Dockerfile
+    image: websocket.service
+    ports:
+      - "8087:8080"
+    environment:
+      JWT_SECRET: ${JWT_SECRET:?Set JWT_SECRET in .env (see .env.example)}
+    depends_on:
+      - rabbitmq
+    networks:
+      - app
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.websocket.rule=PathPrefix(`/ws`)"
+      - "traefik.http.services.websocket.loadbalancer.server.port=8080"
+      - "traefik.docker.network=app"
+
+  customer-service:
+    build:
+      context: ./Customer_Service_Microservice
+      dockerfile: Dockerfile
+    image: customer.service
+    ports:
+      - "8086:8080"
+    environment:
+      DB_IP: support-db
+      DB_PORT: 5432
+      DB_USER: postgres
+      DB_PASSWORD: ${DB_PASSWORD:-postgres}
+      DB_DBNAME: support-db
+      RABBITMQ_HOST: rabbitmq
+      RABBITMQ_PORT: 5672
+      RABBITMQ_USER: guest
+      RABBITMQ_PASS: guest
+      ADMIN_ID: d4bde70f-f18b-472c-98fc-59355a5ff669
+    depends_on:
+      support-db:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_started
+    networks:
+      - app
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.customer.rule=PathPrefix(`/support`)"
+      - "traefik.http.routers.customer.priority=100"
+      - "traefik.http.services.customer.loadbalancer.server.port=8080"
+      - "traefik.docker.network=app"
+
+  frontend:
+    build:
+      context: ./project-frontend
+      dockerfile: Dockerfile
+    image: project-frontend
+    container_name: project-frontend
+    restart: always
+    networks:
+      - app
+    depends_on:
+      - auth-service
+      - user-service
+      - device-service
+      - customer-service
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.frontend.rule=PathPrefix(`/`)"
+      - "traefik.http.routers.frontend.priority=1"
+      - "traefik.http.services.frontend.loadbalancer.server.port=80"
+      - "traefik.docker.network=app"
+
+networks:
+  app:
+    driver: bridge

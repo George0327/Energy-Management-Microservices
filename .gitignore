@@ -1,0 +1,15 @@
+# Environment and secrets
+.env
+
+# Build output and dependencies
+target/
+node_modules/
+dist/
+
+# IDEs
+.idea/
+.vscode/
+*.iml
+
+# Local data
+volumes/
